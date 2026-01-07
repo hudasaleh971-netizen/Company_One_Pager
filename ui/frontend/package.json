@@ -1,0 +1,12 @@
+{
+    "name": "citation-ui-frontend",
+    "version": "1.0.0",
+    "description": "Frontend for Citation Analysis UI",
+    "main": "server.js",
+    "scripts": {
+        "start": "node server.js",
+        "dev": "node server.js"
+    },
+    "author": "",
+    "license": "MIT"
+}

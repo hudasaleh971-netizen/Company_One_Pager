@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Company Analysis - Citation UI</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="logo">
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M12 2L2 7L12 12L22 7L12 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 17L12 22L22 17" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M2 12L12 17L22 12" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span>Citation Analysis</span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main">
+            <!-- Input Section -->
+            <section id="input-section" class="input-section">
+                <div class="input-card">
+                    <h1>Analyze Company Report</h1>
+                    <p class="subtitle">Extract key information with source citations</p>
+                    
+                    <form id="analysis-form">
+                        <div class="form-group">
+                            <label for="company-name">Company Name</label>
+                            <input 
+                                type="text" 
+                                id="company-name" 
+                                name="company_name" 
+                                placeholder="e.g., Saksiam"
+                                required
+                            >
+                        </div>
+                        
+                        <div class="form-group">
+                            <label for="annual-report">Annual Report (Optional)</label>
+                            <div class="file-upload">
+                                <input 
+                                    type="file" 
+                                    id="annual-report" 
+                                    name="file" 
+                                    accept=".pdf"
+                                >
+                                <span class="file-label">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                        <polyline points="17,8 12,3 7,8"/>
+                                        <line x1="12" y1="3" x2="12" y2="15"/>
+                                    </svg>
+                                    <span id="file-name">Choose PDF file</span>
+                                </span>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="btn-primary" id="submit-btn">
+                            <span class="btn-text">Analyze</span>
+                            <span class="btn-loader" style="display: none;">
+                                <svg class="spinner" viewBox="0 0 24 24">
+                                    <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" fill="none" stroke-dasharray="31.4 31.4"/>
+                                </svg>
+                                Analyzing...
+                            </span>
+                        </button>
+                    </form>
+                </div>
+            </section>
+
+            <!-- Results Section -->
+            <section id="results-section" class="results-section" style="display: none;">
+                <div class="results-header">
+                    <button id="back-btn" class="btn-secondary">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M19 12H5M12 19l-7-7 7-7"/>
+                        </svg>
+                        Back
+                    </button>
+                    <h2 id="results-title">Analysis Results</h2>
+                    <div class="citation-badge" id="citation-badge">0 citations</div>
+                </div>
+                
+                <div class="results-content" id="results-content">
+                    <!-- Cited content will be rendered here -->
+                </div>
+            </section>
+        </main>
+
+        <!-- Tooltip Container -->
+        <div id="tooltip" class="tooltip">
+            <div class="tooltip-header">
+                <span class="tooltip-page" id="tooltip-page">Page 1</span>
+                <span class="tooltip-title" id="tooltip-title">Source</span>
+            </div>
+            <div class="tooltip-content" id="tooltip-content">
+                <!-- Source text will be shown here -->
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
