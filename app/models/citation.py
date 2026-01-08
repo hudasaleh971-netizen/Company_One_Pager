@@ -7,7 +7,7 @@ with content through agent processing.
 """
 
 from pydantic import BaseModel, Field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import re
 from loguru import logger
 
@@ -71,21 +71,6 @@ class SourceLibrary(BaseModel):
         return self.sources.get(source_id)
 
 
-# --- OBJECT 2: The Agent Output ---
-# What your Sub-Agents and Consolidation Agent pass around.
-class AgentOutput(BaseModel):
-    """
-    Output structure from sub-agents containing text with embedded citation tags.
-    """
-    content_with_tags: str = Field(
-        ..., 
-        description="Text with embedded tags like 'Revenue is up [[Src:101]].'"
-    )
-    sources: Dict[str, SourceDocument] = Field(
-        default_factory=dict,
-        description="Source documents referenced by the tags"
-    )
-
 
 # --- OBJECT 3: The Frontend Payload ---
 # What you send to Node.js. Clean text + computed indices.
@@ -115,46 +100,61 @@ class FinalResponse(BaseModel):
     )
 
 
-def parse_tags_to_citations(tagged_text: str) -> tuple[str, List[CitationMetadata]]:
+def extract_citations_from_tags(text_with_tags: str) -> Tuple[str, List[CitationMetadata]]:
     """
-    Parse a tagged text string and extract citation metadata.
+    Parses text with [[Src:x]] tags into clean text and metadata indices.
+    Centralized logic used by API and Tests.
+    
+    Handles both formats:
+    - [[Src:101]] - number only
+    - [[Src:src_101]] - with src_ prefix
     
     Args:
-        tagged_text: Text with [[Src:xxx]] tags embedded
+        text_with_tags: Text with [[Src:xxx]] tags embedded
         
     Returns:
         Tuple of (clean_text, list of CitationMetadata)
     """
     logger.info("🔍 Parsing citation tags from text...")
     
-    # Pattern to find [[Src:xxx]] tags
-    tag_pattern = r'\[\[Src:(\w+)\]\]'
+    # Pattern to find [[Src:src_101]] or [[Src:101]]
+    tag_pattern = r'\[\[Src:(?:src_)?(\d+)\]\]'
     
     citations = []
-    clean_text = tagged_text
     offset = 0
     
-    for match in re.finditer(tag_pattern, tagged_text):
-        source_id = match.group(1)
-        tag_start = match.start() - offset
-        tag_end = match.end() - offset
+    # We use an iterator to find all tags
+    matches = list(re.finditer(tag_pattern, text_with_tags))
+    
+    for match in matches:
+        source_num = match.group(1)
+        source_id = f"src_{source_num}"
         
-        # The citation refers to the sentence/phrase BEFORE the tag
-        # For simplicity, we'll mark just the tag position for now
-        citation = CitationMetadata(
-            start_index=tag_start,
-            end_index=tag_start,  # Points to where the tag was
-            source_id=f"src_{source_id}"
-        )
-        citations.append(citation)
-        logger.debug(f"📌 Found citation tag: [[Src:{source_id}]] at position {tag_start}")
+        # Calculate where this tag starts in the original tagged string
+        original_start = match.start()
+        original_end = match.end()
+        tag_length = original_end - original_start
+
+        # The location in the "clean" text is: original_position - total_removed_tags_so_far
+        current_clean_pos = original_start - offset
         
-        # Remove the tag from clean text
-        clean_text = clean_text[:tag_start] + clean_text[tag_end:]
-        offset += (tag_end - match.start())
+        # UI NOTE: Currently this creates a "Spot Citation" (start == end).
+        # If you want to highlight the sentence, you would need NLP logic here 
+        # to look backward from 'current_clean_pos' to find the sentence start.
+        citations.append(CitationMetadata(
+            start_index=current_clean_pos,
+            end_index=current_clean_pos, 
+            source_id=source_id
+        ))
+        
+        logger.debug(f"📌 Found citation tag: [[Src:{source_num}]] at clean position {current_clean_pos}")
+        offset += tag_length
+
+    # Remove all tags to get the final clean text
+    clean_text = re.sub(tag_pattern, '', text_with_tags)
     
     logger.info(f"✅ Parsed {len(citations)} citations from text")
-    return clean_text.strip(), citations
+    return clean_text, citations
 
 
 def create_final_response(
@@ -173,7 +173,7 @@ def create_final_response(
     """
     logger.info("📦 Creating final response payload...")
     
-    clean_text, citations = parse_tags_to_citations(tagged_text)
+    clean_text, citations = extract_citations_from_tags(tagged_text)
     
     # Filter sources to only those referenced in citations
     referenced_sources = {}

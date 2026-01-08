@@ -1,16 +1,16 @@
 """
 FastAPI Backend for Citation UI
 
-This is the main API server located in the app folder.
-Uses the working agent flow from test_citation_system.py.
+Uses factory functions to create fresh SequentialAgent instances.
+Returns FinalResponse structure with clean_text, cited_text, citations, sources.
 """
 
 import os
 import sys
-import shutil
 import uuid
-import asyncio
-from typing import Optional
+import re
+import json
+from typing import Optional, List, Dict, Any
 from pathlib import Path
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -19,24 +19,24 @@ from pydantic import BaseModel
 from loguru import logger
 
 from google.genai import types
+from google.adk.agents import SequentialAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 
-from app.agents.initial_search_agent import initial_search_agent
-from app.agents.parallel_extraction_agent import stakeholder_agent
+# Import factory functions (not instances)
+from app.agents.initial_search_agent import create_initial_search_agent
+from app.agents.parallel_extraction_agent import create_stakeholder_agent
+from app.models.citation import FinalResponse, CitationMetadata, SourceDocument, extract_citations_from_tags
 
 # ============ LOGGING SETUP ============
-# Remove default handler and configure file + console logging
 logger.remove()
 
-# Console output
 logger.add(
     sys.stderr,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     level="DEBUG"
 )
 
-# File output - saves to logs folder
 LOG_DIR = Path(__file__).parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 logger.add(
@@ -47,12 +47,11 @@ logger.add(
     format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
 )
 
-logger.info(f"📁 Logs will be saved to: {LOG_DIR}")
+logger.info(f"📁 Logs: {LOG_DIR}")
 
 # ============ UPLOAD DIRECTORY ============
 UPLOAD_DIR = Path(__file__).parent.parent / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
-logger.info(f"📁 Uploads directory: {UPLOAD_DIR}")
 
 # ============ FASTAPI APP ============
 app = FastAPI(
@@ -61,7 +60,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,13 +69,38 @@ app.add_middleware(
 )
 
 
+# ============ RESPONSE MODELS ============
+class CitationItem(BaseModel):
+    start_index: int
+    end_index: int
+    source_id: str
+
+
+class SourceItem(BaseModel):
+    source_id: str
+    title: str
+    page_number: str
+    raw_text: str
+
+
 class AnalysisResponse(BaseModel):
     company_name: str
-    content: str
-    sources: dict
-    has_citations: bool
-    citation_count: int
+    clean_text: str
+    cited_text: str
+    citations: List[CitationItem]
+    sources: Dict[str, SourceItem]
     error: Optional[str] = None
+
+
+def create_citation_sequential_agent() -> SequentialAgent:
+    """Factory to create a fresh SequentialAgent for each request."""
+    return SequentialAgent(
+        name="APICitationAgent",
+        sub_agents=[
+            create_initial_search_agent("APIInitialSearchAgent"),
+            create_stakeholder_agent("APIStakeholderAgent"),
+        ],
+    )
 
 
 @app.get("/")
@@ -95,20 +118,14 @@ async def analyze_company(
     company_name: str = Form(...),
     file: Optional[UploadFile] = File(None)
 ):
-    """
-    Analyze a company from its annual report.
-    
-    - **company_name**: Name of the company
-    - **file**: Optional PDF file of the annual report
-    """
+    """Analyze a company from its annual report."""
     logger.info("=" * 60)
-    logger.info(f"📥 Received analysis request for: {company_name}")
+    logger.info(f"📥 Analysis request: {company_name}")
     
     file_path = None
     
     # Handle file upload
     if file:
-        # Generate unique filename with original extension
         file_ext = os.path.splitext(file.filename)[1] or ".pdf"
         unique_filename = f"{company_name.replace(' ', '_')}_{uuid.uuid4().hex[:8]}{file_ext}"
         file_path = str(UPLOAD_DIR / unique_filename)
@@ -117,66 +134,48 @@ async def analyze_company(
             with open(file_path, "wb") as buffer:
                 content = await file.read()
                 buffer.write(content)
-            
-            file_size = os.path.getsize(file_path)
-            logger.info(f"📁 Saved uploaded file: {file_path} ({file_size} bytes)")
-            
-            # Verify file exists
-            if not os.path.exists(file_path):
-                logger.error(f"❌ File save failed - file not found: {file_path}")
-                raise HTTPException(status_code=500, detail="Failed to save uploaded file")
-                
+            logger.info(f"📁 Saved: {file_path} ({os.path.getsize(file_path)} bytes)")
         except Exception as e:
-            logger.error(f"❌ Failed to save file: {e}")
-            raise HTTPException(status_code=500, detail=f"Failed to save uploaded file: {e}")
+            logger.error(f"❌ File save failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
     
     # Run analysis
     try:
-        result = await run_agents(company_name, file_path)
+        result = await run_sequential_agent(company_name, file_path)
         
-        if "error" in result:
-            logger.error(f"❌ Analysis failed: {result['error']}")
+        if result.get("error"):
             return AnalysisResponse(
                 company_name=company_name,
-                content="",
+                clean_text="",
+                cited_text="",
+                citations=[],
                 sources={},
-                has_citations=False,
-                citation_count=0,
                 error=result["error"]
             )
         
-        logger.info(f"✅ Analysis complete: {result.get('citation_count', 0)} citations found")
-        
         return AnalysisResponse(
-            company_name=result.get("company_name", company_name),
-            content=result.get("content", ""),
-            sources=result.get("sources", {}),
-            has_citations=result.get("has_citations", False),
-            citation_count=result.get("citation_count", 0)
+            company_name=company_name,
+            clean_text=result.get("clean_text", ""),
+            cited_text=result.get("cited_text", ""),
+            citations=result.get("citations", []),
+            sources=result.get("sources", {})
         )
         
     except Exception as e:
-        logger.error(f"❌ Analysis exception: {e}")
+        logger.error(f"❌ Analysis failed: {e}")
         import traceback
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 
-async def run_agents(company_name: str, file_path: Optional[str] = None) -> dict:
-    """
-    Run the citation agents for a company.
-    Based on the working test_citation_system.py flow.
-    """
-    logger.info(f"🚀 Starting agent pipeline for: {company_name}")
-    if file_path:
-        logger.info(f"📄 File path: {file_path}")
-        logger.info(f"📄 File exists: {os.path.exists(file_path)}")
+async def run_sequential_agent(company_name: str, file_path: Optional[str] = None) -> dict:
+    """Run the SequentialAgent and return FinalResponse structure."""
+    logger.info(f"🚀 Running SequentialAgent for: {company_name}")
     
     APP_NAME = "citation_api"
     USER_ID = "api_user"
-    SESSION_ID = f"session_{company_name.lower().replace(' ', '_')}_{uuid.uuid4().hex[:6]}"
+    SESSION_ID = f"session_{uuid.uuid4().hex[:8]}"
     
-    # Setup session
     session_service = InMemorySessionService()
     
     initial_state = {
@@ -184,117 +183,134 @@ async def run_agents(company_name: str, file_path: Optional[str] = None) -> dict
         "annual_report_filename": file_path if file_path else ""
     }
     
-    logger.info(f"📝 Creating session with state: {initial_state}")
+    logger.info(f"📝 Session: {initial_state}")
     
-    session = await session_service.create_session(
+    await session_service.create_session(
         app_name=APP_NAME,
         user_id=USER_ID,
         session_id=SESSION_ID,
         state=initial_state
     )
     
-    # ============ PHASE 1: Initial Search Agent ============
-    logger.info("-" * 50)
-    logger.info("📋 PHASE 1: Running InitialSearchAgent")
-    logger.info("-" * 50)
+    # Create fresh agent using factory
+    citation_agent = create_citation_sequential_agent()
     
-    runner1 = Runner(
-        agent=initial_search_agent,
-        app_name=APP_NAME,
-        session_service=session_service
-    )
-    
-    try:
-        query1 = types.Content(role='user', parts=[types.Part(text="Find the annual report.")])
-        events = runner1.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=query1)
-        
-        async for event in events:
-            if event.is_final_response():
-                if event.content and event.content.parts:
-                    logger.info(f"✅ InitialSearchAgent response: {event.content.parts[0].text[:200]}...")
-                else:
-                    logger.info("✅ InitialSearchAgent completed (no content)")
-                
-    except Exception as e:
-        logger.error(f"❌ Error in Phase 1: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return {"error": f"InitialSearchAgent failed: {str(e)}"}
-    
-    # Check vector store was created
-    session = await session_service.get_session(
-        app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID
-    )
-    vector_store_name = session.state.get("vector_store_name")
-    
-    logger.info(f"📦 Vector Store Name: {vector_store_name}")
-    
-    if not vector_store_name:
-        logger.error("❌ No vector store created")
-        logger.error(f"Session state: {dict(session.state)}")
-        return {"error": "Failed to create vector store for annual report. Check if file was uploaded correctly."}
-    
-    # ============ PHASE 2: Stakeholder Agent ============
-    logger.info("-" * 50)
-    logger.info("📋 PHASE 2: Running StakeholderAgent")
-    logger.info("-" * 50)
-    
-    runner2 = Runner(
-        agent=stakeholder_agent,
+    runner = Runner(
+        agent=citation_agent,
         app_name=APP_NAME,
         session_service=session_service
     )
     
     result = {
-        "company_name": company_name,
-        "content": "",
-        "sources": {},
-        "has_citations": False,
-        "citation_count": 0
+        "clean_text": "",
+        "cited_text": "",
+        "citations": [],
+        "sources": {}
     }
     
     try:
-        query2 = types.Content(role='user', parts=[types.Part(
-            text="List all known shareholders with their ownership percentages and notes."
-        )])
+        query = types.Content(
+            role='user', 
+            parts=[types.Part(text="Find the annual report and list all known shareholders with their ownership percentages.")]
+        )
         
-        events = runner2.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=query2)
+        events = runner.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=query)
         
+        last_output = None
+        last_author = None
+        event_count = 0
+
         async for event in events:
+            event_count += 1
+            author = getattr(event, 'author', 'unknown')
+            
+            # Log all events for debugging
+            logger.debug(f"📨 Event #{event_count} from: {author}, is_final: {event.is_final_response()}")
+            
             if event.is_final_response():
                 if event.content and event.content.parts:
                     raw_output = event.content.parts[0].text
-                    logger.info(f"📝 Raw StakeholderAgent output: {raw_output[:300]}...")
+                    logger.info(f"📝 Final response from {author}: {len(raw_output)} chars")
+                    logger.debug(f"📝 First 200 chars: {raw_output[:200]}...")
                     
-                    # Try to parse as JSON (from CitedContent schema)
-                    import json
-                    try:
-                        parsed = json.loads(raw_output)
-                        result["content"] = parsed.get("content", raw_output)
-                        result["sources"] = parsed.get("sources", {})
-                        result["has_citations"] = parsed.get("has_citations", False)
-                        logger.info(f"✅ Parsed as JSON, sources: {len(result['sources'])}")
-                    except json.JSONDecodeError:
-                        result["content"] = raw_output
-                        logger.warning("⚠️ Could not parse as JSON, using raw text")
-                    
-                    logger.info("✅ StakeholderAgent completed")
-                    
+                    # Store each final response - we want the LAST one (StakeholderAgent)
+                    last_output = raw_output
+                    last_author = author
+        
+        logger.info(f"📊 Total events: {event_count}, Final author: {last_author}")
+        
+        # Retrieve FinalResponse from session state (stored by tools.py)
+        # This bypasses agent text output which loses structured data
+        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        final_response = session.state.get("final_response")
+        
+        if final_response:
+            logger.info(f"✅ Retrieved FinalResponse from session state")
+            
+            cited_text = final_response.get("cited_text", "")
+            sources_raw = final_response.get("sources", {})
+            
+            logger.info(f"📚 Found {len(sources_raw)} sources with metadata")
+            
+            # Use shared parser from citation.py
+            clean_text, citations = extract_citations_from_tags(cited_text)
+            
+            # Convert CitationMetadata objects to dicts for response
+            citations_dicts = [{
+                "start_index": c.start_index,
+                "end_index": c.end_index,
+                "source_id": c.source_id
+            } for c in citations]
+            
+            # Convert sources - preserve full metadata for tooltips
+            sources = {}
+            for src_id, src_data in sources_raw.items():
+                if isinstance(src_data, dict):
+                    sources[src_id] = {
+                        "source_id": src_id,
+                        "title": src_data.get("title", "Annual Report"),
+                        "page_number": src_data.get("page_number", ""),
+                        "raw_text": src_data.get("raw_text", "")
+                    }
+            
+            result = {
+                "clean_text": clean_text,
+                "cited_text": cited_text,
+                "citations": citations_dicts,
+                "sources": sources
+            }
+            
+            logger.info(f"✅ Final: {len(citations)} citations, {len(sources)} sources")
+        else:
+            logger.warning("⚠️ No FinalResponse in session state - using agent output")
+            # Fallback to agent output if session state empty
+            if last_output:
+                cited_text = last_output
+                clean_text, citations = extract_citations_from_tags(cited_text)
+                citations_dicts = [{
+                    "start_index": c.start_index,
+                    "end_index": c.end_index,
+                    "source_id": c.source_id
+                } for c in citations]
+                result = {
+                    "clean_text": clean_text,
+                    "cited_text": cited_text,
+                    "citations": citations_dicts,
+                    "sources": {}
+                }
+                     
     except Exception as e:
-        logger.error(f"❌ Error in Phase 2: {e}")
+        logger.error(f"❌ Error: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        return {"error": f"StakeholderAgent failed: {str(e)}"}
-    
-    # Check for citations in the content
-    import re
-    citation_tags = re.findall(r'\[\[Src:(\d+)\]\]', result["content"])
-    result["citation_count"] = len(citation_tags)
-    
-    logger.info(f"📊 Analysis complete: {result['citation_count']} citations found")
-    logger.info("=" * 60)
+        
+        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        if not session.state.get("vector_store_name"):
+            return {"error": "Failed to create vector store. Check file upload."}
+        return {"error": str(e)}
     
     return result
+
 
 
 if __name__ == "__main__":

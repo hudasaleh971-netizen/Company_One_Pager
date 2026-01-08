@@ -9,30 +9,30 @@
     --bg-secondary: #1a1a22;
     --bg-card: #242430;
     --bg-hover: #2e2e3d;
-    
+
     --text-primary: #ffffff;
     --text-secondary: #a0a0b0;
     --text-muted: #6b6b7d;
-    
+
     --accent-primary: #7c5cff;
     --accent-secondary: #5c9cff;
     --accent-gradient: linear-gradient(135deg, #7c5cff 0%, #5c9cff 100%);
-    
+
     --border-color: #2e2e3d;
     --border-radius: 12px;
-    
+
     --citation-bg: #3d3d52;
     --citation-text: #c9c9ff;
-    
+
     /* Tooltip */
     --tooltip-bg: #1e1e28;
     --tooltip-border: #3d3d52;
-    
+
     /* Shadows */
     --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
     --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
     --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
-    
+
     /* Fonts */
     --font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
 }
@@ -233,7 +233,9 @@ body {
 }
 
 @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 /* ========== Results Section ========== */
@@ -242,8 +244,15 @@ body {
 }
 
 @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(20px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .results-header {
@@ -317,12 +326,29 @@ body {
 }
 
 @keyframes tooltipFadeIn {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+    from {
+        opacity: 0;
+        transform: translateY(8px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .tooltip.visible {
     display: block;
+}
+
+.tooltip.pinned {
+    border-color: var(--accent-primary);
+    box-shadow: 0 0 0 2px var(--accent-primary), var(--shadow-lg);
+}
+
+.tooltip-content {
+    user-select: text;
+    cursor: text;
 }
 
 .tooltip-header {
@@ -379,9 +405,17 @@ body {
     margin-bottom: 12px;
 }
 
-.results-content h1 { font-size: 24px; }
-.results-content h2 { font-size: 20px; }
-.results-content h3 { font-size: 18px; }
+.results-content h1 {
+    font-size: 24px;
+}
+
+.results-content h2 {
+    font-size: 20px;
+}
+
+.results-content h3 {
+    font-size: 18px;
+}
 
 .results-content ul,
 .results-content ol {
@@ -420,11 +454,11 @@ body {
     .input-card {
         padding: 32px 24px;
     }
-    
+
     .results-content {
         padding: 24px;
     }
-    
+
     .tooltip {
         max-width: calc(100vw - 32px);
     }

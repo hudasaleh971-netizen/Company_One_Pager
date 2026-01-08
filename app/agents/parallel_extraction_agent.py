@@ -1,90 +1,147 @@
+"""
+Parallel Extraction Agent Factories
+
+Provides factory functions to create fresh agent instances for extraction.
+Each call returns a new agent instance to avoid parent agent conflicts.
+"""
+
 import sys
 import os
 
-# Add project root to sys.path to allow imports from 'app'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List
+from typing import Dict, Any
 from google.adk.agents import LlmAgent, ParallelAgent
 from google.adk.models.google_llm import Gemini
 from google.adk.tools import FunctionTool
-
+from app.models.citation import FinalResponse
 from app.tools import ask_annual_report
 from app.config import DEFAULT_RETRY_CONFIG
 
 GEMINI_MODEL_NAME = "gemini-flash-latest"
 
 
-# Output schema for agent responses - includes cited_text from FinalResponse
-class CitedContent(BaseModel):
-    """Output schema that includes the cited content from the tool's FinalResponse."""
-    content: str = Field(
-        ..., 
-        description="The extracted information with [[Src:XXX]] citation tags. Copy this directly from the 'cited_text' field of the tool output."
-    )
-    sources: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="The sources dictionary from the tool output. Copy this directly from the 'sources' field."
-    )
+# Output schema for agent responses
 
 
-def _create_agent(name: str, task: str, output_key: str):
+
+def _create_extraction_agent(name: str, task: str, output_key: str) -> LlmAgent:
+    """
+    Internal factory to create an extraction agent.
+    
+    Args:
+        name: Name for the agent
+        task: Task description for extraction
+        output_key: Key to store output in session state
+        
+    Returns:
+        A new LlmAgent configured for extraction
+    """
     return LlmAgent(
         name=name,
         model=Gemini(model_name=GEMINI_MODEL_NAME, retry_options=DEFAULT_RETRY_CONFIG),
         tools=[FunctionTool(ask_annual_report)],
-        output_schema=CitedContent,
+        output_schema=FinalResponse,
         instruction=f"""
         You are a specialized analyst for {{company_name}}.
-        You have a tool `ask_annual_report(store_name, question)` to ask questions to the company's annual report.
+        You have a tool `ask_annual_report(store_name, question)` to extract information from the company's annual report.
         
-        CRITICAL: Always use the store name provided here: {{vector_store_name}}.
-        Pass this EXACT value as the `store_name` argument to the tool.
+        CRITICAL: Always use the store name: {{vector_store_name}}
+        Pass this EXACT value as the `store_name` argument.
 
-        If the tool returns an error, state that the information could not be retrieved.
-        
-        Your task is to extract the following information:
+        Your task:
         {task}
         
-        *** IMPORTANT: HANDLING THE TOOL OUTPUT ***
+        *** CRITICAL: OUTPUT FORMAT ***
         
-        The tool returns a FinalResponse dictionary with these fields:
-        - "clean_text": Text WITHOUT citation tags
-        - "cited_text": Text WITH [[Src:XXX]] citation tags embedded
-        - "citations": List of citation metadata
-        - "sources": Dictionary of source documents for tooltips
+        The tool returns JSON with:
+        - "cited_text": Text with [[Src:XXX]] citation tags
+        - "sources": Dictionary of source documents with page numbers and text
         
-        YOU MUST:
-        1. Use the "cited_text" field from the tool output for your response
-        2. Copy the [[Src:XXX]] tags exactly as they appear
-        3. Include the "sources" dictionary in your output
+        You MUST return the EXACT tool output as-is (as JSON).
+        DO NOT summarize or modify it. The sources dictionary is required for interactive citations.
         
-        Example tool output:
-        {{
-          "clean_text": "Revenue grew 20%.",
-          "cited_text": "Revenue grew 20% [[Src:100]].",
-          "citations": [...],
-          "sources": {{"src_100": {{...}}}}
-        }}
-        
-        Your response MUST be:
-        {{
-          "content": "Revenue grew 20% [[Src:100]].",
-          "sources": {{"src_100": {{...}}}}
-        }}
-        
-        DO NOT REMOVE [[Src:XXX]] TAGS. They are required for source attribution.
+        Example correct output:
+        {{"cited_text": "Revenue grew 15%[[Src:101]]...", "sources": {{"src_101": {{"title": "...", "page_number": "Page 5", "raw_text": "..."}}}}}}
         """,
         output_key=output_key,
     )
 
 
-leadership_agent = _create_agent("LeadershipAgent", "List the current Management Team: Full name, role, education, and career summary.", "leadership_data")
-metrics_agent = _create_agent("MetricsAgent", "Collect key metrics: Borrowers, Employees, Loan outstanding, PAR > 30, Disbursals, Equity, Net income, Credit rating.", "metrics_data")
-stakeholder_agent = _create_agent("StakeholderAgent", "List all known shareholders: Name, Ownership %, and Notes.", "stakeholder_data")
-products_agent = _create_agent("ProductsAgent", "Extract a complete list of products and technologies with relevant statistics.", "products_data")
-overview_agent = _create_agent("CompanyOverviewAgent", "Generate 10-15 bullet points for a company background narrative (Founding, HQ, Business Model, etc.).", "overview_data")
+# ============================================================
+# FACTORY FUNCTIONS - Use these to create fresh instances
+# ============================================================
+
+def create_leadership_agent(name: str = "LeadershipAgent") -> LlmAgent:
+    """Create a fresh LeadershipAgent instance."""
+    return _create_extraction_agent(
+        name=name,
+        task="List the current Management Team: Full name, role, education, and career summary.",
+        output_key="leadership_data"
+    )
+
+
+def create_metrics_agent(name: str = "MetricsAgent") -> LlmAgent:
+    """Create a fresh MetricsAgent instance."""
+    return _create_extraction_agent(
+        name=name,
+        task="Collect key metrics: Borrowers, Employees, Loan outstanding, PAR > 30, Disbursals, Equity, Net income, Credit rating.",
+        output_key="metrics_data"
+    )
+
+
+def create_stakeholder_agent(name: str = "StakeholderAgent") -> LlmAgent:
+    """Create a fresh StakeholderAgent instance."""
+    return _create_extraction_agent(
+        name=name,
+        task="List all known shareholders: Name, Ownership %, year and Notes.",
+        output_key="stakeholder_data"
+    )
+
+
+def create_products_agent(name: str = "ProductsAgent") -> LlmAgent:
+    """Create a fresh ProductsAgent instance."""
+    return _create_extraction_agent(
+        name=name,
+        task="Extract a complete list of products and technologies with relevant statistics.",
+        output_key="products_data"
+    )
+
+
+def create_overview_agent(name: str = "CompanyOverviewAgent") -> LlmAgent:
+    """Create a fresh CompanyOverviewAgent instance."""
+    return _create_extraction_agent(
+        name=name,
+        task="Generate 10-15 bullet points for a company background narrative (Founding, HQ, Business Model, etc.).",
+        output_key="overview_data"
+    )
+
+
+def create_parallel_extraction_agent(name: str = "ParallelExtractionAgent") -> ParallelAgent:
+    """Create a fresh ParallelExtractionAgent with all sub-agents."""
+    return ParallelAgent(
+        name=name,
+        sub_agents=[
+            create_leadership_agent(),
+            create_metrics_agent(),
+            create_stakeholder_agent(),
+            create_products_agent(),
+            create_overview_agent()
+        ]
+    )
+
+
+# ============================================================
+# BACKWARDS COMPATIBILITY - Default instances
+# WARNING: Only use if not sharing across multiple workflows
+# ============================================================
+
+leadership_agent = create_leadership_agent()
+metrics_agent = create_metrics_agent()
+stakeholder_agent = create_stakeholder_agent()
+products_agent = create_products_agent()
+overview_agent = create_overview_agent()
 
 parallel_extraction_agent = ParallelAgent(
     name="ParallelExtractionAgent",
