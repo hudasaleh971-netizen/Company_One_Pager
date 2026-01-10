@@ -17,4 +17,4 @@ DEFAULT_RETRY_CONFIG = types.HttpRetryOptions(
 )
 
 # --- Agent Configurations ---
-MAX_REFINEMENT_ITERATIONS = 3
+MAX_REFINEMENT_ITERATIONS = 2
