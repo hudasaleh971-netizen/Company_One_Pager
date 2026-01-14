@@ -25,7 +25,14 @@ from google.adk.sessions import InMemorySessionService
 
 # Import factory functions (not instances)
 from app.agents.initial_search_agent import create_initial_search_agent
-from app.agents.parallel_extraction_agent import create_stakeholder_agent
+from app.agents.parallel_extraction_agent import (
+    create_stakeholder_agent,
+    create_leadership_agent,
+    create_metrics_agent,
+    create_products_agent, 
+    create_overview_agent,
+    create_parallel_extraction_agent
+)
 from app.models.citation import FinalResponse, CitationMetadata, SourceDocument, extract_citations_from_tags
 
 # ============ LOGGING SETUP ============
@@ -89,6 +96,27 @@ class AnalysisResponse(BaseModel):
     cited_text: str
     citations: List[CitationItem]
     sources: Dict[str, SourceItem]
+    error: Optional[str] = None
+
+
+# ============ NEW: ANNUAL REPORT MODELS ============
+class SectionData(BaseModel):
+    """Data for a single section extracted from the annual report."""
+    section_name: str
+    cited_text: str
+    clean_text: str
+    citations: List[CitationItem]
+    sources: Dict[str, SourceItem]
+
+
+class AnnualReportResponse(BaseModel):
+    """Response containing all extracted sections from the annual report."""
+    company_name: str
+    overview: Optional[SectionData] = None
+    products: Optional[SectionData] = None
+    leadership: Optional[SectionData] = None
+    stakeholders: Optional[SectionData] = None
+    metrics: Optional[SectionData] = None
     error: Optional[str] = None
 
 
@@ -312,7 +340,232 @@ async def run_sequential_agent(company_name: str, file_path: Optional[str] = Non
     return result
 
 
+# ============ NEW: ANNUAL REPORT PARALLEL EXTRACTION ============
+
+def create_annual_report_sequential_agent() -> SequentialAgent:
+    """Factory to create a SequentialAgent for full annual report extraction.
+    
+    Uses InitialSearchAgent first, then ParallelExtractionAgent for all 5 sections.
+    """
+    logger.debug("🔧 Creating Annual Report Sequential Agent")
+    return SequentialAgent(
+        name="AnnualReportAgent",
+        sub_agents=[
+            create_initial_search_agent("ReportInitialSearchAgent"),
+            create_parallel_extraction_agent("ReportParallelExtractor"),
+        ],
+    )
+
+
+def process_section_data(raw_data: dict, section_name: str) -> Optional[SectionData]:
+    """Process raw section data from session state into SectionData model."""
+    if not raw_data:
+        logger.warning(f"⚠️ No data for section: {section_name}")
+        return None
+    
+    try:
+        cited_text = raw_data.get("cited_text", "")
+        sources_raw = raw_data.get("sources", {})
+        
+        # Extract citations from tags
+        clean_text, citations = extract_citations_from_tags(cited_text)
+        
+        # Convert CitationMetadata to CitationItem dicts
+        citations_list = [{
+            "start_index": c.start_index,
+            "end_index": c.end_index,
+            "source_id": c.source_id
+        } for c in citations]
+        
+        # Convert sources to SourceItem format
+        sources = {}
+        for src_id, src_data in sources_raw.items():
+            if isinstance(src_data, dict):
+                sources[src_id] = {
+                    "source_id": src_id,
+                    "title": src_data.get("title", "Annual Report"),
+                    "page_number": src_data.get("page_number", ""),
+                    "raw_text": src_data.get("raw_text", "")
+                }
+        
+        logger.info(f"✅ {section_name}: {len(citations_list)} citations, {len(sources)} sources")
+        
+        return SectionData(
+            section_name=section_name,
+            cited_text=cited_text,
+            clean_text=clean_text,
+            citations=citations_list,
+            sources=sources
+        )
+    except Exception as e:
+        logger.error(f"❌ Error processing {section_name}: {e}")
+        return None
+
+
+@app.post("/api/analyze-report", response_model=AnnualReportResponse)
+async def analyze_annual_report(
+    company_name: str = Form(...),
+    file: Optional[UploadFile] = File(None)
+):
+    """Analyze a company's annual report and extract all sections in parallel.
+    
+    Returns structured data for: Overview, Products, Leadership, Stakeholders, Metrics
+    """
+    logger.info("=" * 60)
+    logger.info(f"📊 ANNUAL REPORT ANALYSIS: {company_name}")
+    logger.info("=" * 60)
+    
+    file_path = None
+    
+    # Handle file upload
+    if file:
+        file_ext = os.path.splitext(file.filename)[1] or ".pdf"
+        unique_filename = f"{company_name.replace(' ', '_')}_{uuid.uuid4().hex[:8]}{file_ext}"
+        file_path = str(UPLOAD_DIR / unique_filename)
+        
+        try:
+            with open(file_path, "wb") as buffer:
+                content = await file.read()
+                buffer.write(content)
+            logger.info(f"📁 Saved: {file_path} ({os.path.getsize(file_path)} bytes)")
+        except Exception as e:
+            logger.error(f"❌ File save failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    
+    # Run parallel extraction
+    try:
+        result = await run_parallel_extraction(company_name, file_path)
+        
+        if result.get("error"):
+            return AnnualReportResponse(
+                company_name=company_name,
+                error=result["error"]
+            )
+        
+        return AnnualReportResponse(
+            company_name=company_name,
+            overview=result.get("overview"),
+            products=result.get("products"),
+            leadership=result.get("leadership"),
+            stakeholders=result.get("stakeholders"),
+            metrics=result.get("metrics")
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Annual report analysis failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def run_parallel_extraction(company_name: str, file_path: Optional[str] = None) -> dict:
+    """Run parallel extraction for all 5 sections of the annual report."""
+    logger.info(f"🚀 Running Parallel Extraction for: {company_name}")
+    
+    APP_NAME = "annual_report_api"
+    USER_ID = "api_user"
+    SESSION_ID = f"report_session_{uuid.uuid4().hex[:8]}"
+    
+    session_service = InMemorySessionService()
+    
+    initial_state = {
+        "company_name": company_name,
+        "annual_report_filename": file_path if file_path else ""
+    }
+    
+    logger.info(f"📝 Session: {SESSION_ID}")
+    logger.debug(f"📝 Initial state: {initial_state}")
+    
+    await session_service.create_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+        state=initial_state
+    )
+    
+    # Create fresh agent using factory
+    annual_report_agent = create_annual_report_sequential_agent()
+    
+    runner = Runner(
+        agent=annual_report_agent,
+        app_name=APP_NAME,
+        session_service=session_service
+    )
+    
+    result = {}
+    
+    try:
+        query = types.Content(
+            role='user', 
+            parts=[types.Part(text="Analyze the annual report and extract all sections: overview, products, leadership, stakeholders, and metrics.")]
+        )
+        
+        logger.info("📤 Starting parallel extraction...")
+        events = runner.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=query)
+        
+        event_count = 0
+        async for event in events:
+            event_count += 1
+            author = getattr(event, 'author', 'unknown')
+            
+            if event.is_final_response():
+                logger.debug(f"📨 Final response #{event_count} from: {author}")
+        
+        logger.info(f"📊 Total events processed: {event_count}")
+        
+        # Retrieve section data from session state
+        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        
+        logger.info("📥 Extracting section data from session state...")
+        logger.debug(f"📋 Session state keys: {list(session.state.keys())}")
+        
+        # Map output_keys to section names
+        section_mapping = {
+            "overview_data": "overview",
+            "products_data": "products", 
+            "leadership_data": "leadership",
+            "stakeholder_data": "stakeholders",
+            "metrics_data": "metrics"
+        }
+        
+        for state_key, section_name in section_mapping.items():
+            raw_data = session.state.get(state_key)
+            if raw_data:
+                logger.info(f"📄 Found {state_key} in session state")
+                section_data = process_section_data(raw_data, section_name)
+                if section_data:
+                    result[section_name] = section_data
+            else:
+                logger.warning(f"⚠️ Missing {state_key} in session state")
+        
+        # Also check for final_response (fallback for each agent)
+        for state_key, section_name in section_mapping.items():
+            if section_name not in result:
+                # Try alternate key formats
+                final_key = f"{section_name}_final_response"
+                if session.state.get(final_key):
+                    logger.info(f"📄 Found {final_key} as fallback")
+                    section_data = process_section_data(session.state.get(final_key), section_name)
+                    if section_data:
+                        result[section_name] = section_data
+        
+        logger.info(f"✅ Extraction complete: {len(result)} sections extracted")
+        
+    except Exception as e:
+        logger.error(f"❌ Parallel extraction error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        if not session.state.get("vector_store_name"):
+            return {"error": "Failed to create vector store. Check file upload."}
+        return {"error": str(e)}
+    
+    return result
+
+
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000, reload=True)
+

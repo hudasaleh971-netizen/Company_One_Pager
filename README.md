@@ -76,18 +76,12 @@ The ADK web server provides a robust way to test and debug the agentic workflow 
 
 ### 1. Start the Server
 
-Run the `server.py` file using uvicorn:
+Run the API server using uvicorn:
 
 ```bash
-uvicorn server:app --reload
+uvicorn app.api:app --reload
 ```
 *   `--reload` will automatically restart the server when you make code changes.
-
-Alternatively, you can use the `adk` command-line tool:
-
-```bash
-adk serve ./server.py
-```
 
 The server will be available at `http://127.0.0.1:8000`.
 

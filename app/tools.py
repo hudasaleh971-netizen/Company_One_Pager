@@ -5,14 +5,13 @@ from typing import Dict, Any, Optional
 from google.genai import types, client
 from google.adk.tools import ToolContext
 from loguru import logger
-from app.config import GEMINI_API_KEY, GEMINI_MODEL_NAME
+from app.config import GEMINI_API_KEY, TOOL_MODEL_NAME
 from app.models.citation import (
     SourceDocument, 
     SourceLibrary, 
     FinalResponse,
     get_page_number
 )
-
 
 def ask_annual_report(store_name: str, question: str, tool_context: ToolContext) -> Dict[str, Any]:
     """
@@ -41,7 +40,7 @@ def ask_annual_report(store_name: str, question: str, tool_context: ToolContext)
             api_key=GEMINI_API_KEY,
         )
         response = gemini_client.models.generate_content(
-            model= GEMINI_MODEL_NAME,
+            model=TOOL_MODEL_NAME,
             contents=question,
             config=types.GenerateContentConfig(
                 tools=[types.Tool(

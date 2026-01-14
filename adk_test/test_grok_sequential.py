@@ -1,3 +1,14 @@
+"""
+Test Sequential Extraction Agent with Groq
+============================================
+Tests the sequential_extraction_agent which uses Groq (via LiteLlm) 
+for fast LLM inference instead of Gemini.
+
+This test runs:
+1. initial_search_agent (Gemini) - finds/uploads annual report to vector store
+2. sequential_extraction_agent (Groq) - runs all 5 extraction agents sequentially
+"""
+
 import sys
 import os
 import asyncio
@@ -22,7 +33,7 @@ logger.add(
 LOG_DIR = Path(__file__).parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 logger.add(
-    LOG_DIR / "test_{time:YYYY-MM-DD}.log",
+    LOG_DIR / "test_grok_{time:YYYY-MM-DD}.log",
     rotation="10 MB",
     retention="7 days",
     level="DEBUG",
@@ -34,33 +45,32 @@ logger.info(f"📁 Test logs will be saved to: {LOG_DIR}")
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from app.agents.initial_search_agent import initial_search_agent
-from app.agents.parallel_extraction_agent import leadership_agent
+from app.agents.sequential_extraction_agent import create_sequential_extraction_agent
 
 # CONFIGURATION
-APP_NAME = "test_app"
+APP_NAME = "test_grok_app"
 USER_ID = "test_user"
-SESSION_ID = "test_sequential_agents"
+SESSION_ID = "test_grok_sequential"
 
-async def test_sequential_agents():
+async def test_grok_sequential_agent():
     """
     Test that runs:
-    1. initial_search_agent - finds/uploads annual report to vector store
-    2. leadership_agent - queries the vector store for leadership info
-    
-    This test prints grounding metadata to help understand citation sources.
+    1. initial_search_agent (Gemini) - finds/uploads annual report to vector store
+    2. sequential_extraction_agent (Grok) - runs all 5 extraction agents one at a time
     """
     logger.info("=" * 70)
-    logger.info("🧪 SEQUENTIAL AGENT TEST: initial_search_agent → leadership_agent")
+    logger.info("🧪 GROK SEQUENTIAL AGENT TEST")
+    logger.info("   Phase 1: initial_search_agent (Gemini)")
+    logger.info("   Phase 2: sequential_extraction_agent (Grok via LiteLlm)")
     logger.info("=" * 70)
     
     # 1. Setup Session Service
     session_service = InMemorySessionService()
     
     # 2. Prepare Initial State
-    # Change these values to test with different companies/files
     initial_state = {
         "company_name": "Saksiam",
-        "annual_report_filename": "C:/Users/HudaGoian/Documents/Cooperate Development/Company One Pager/Saksiam AR 24.pdf"  # Use string "None" for safe template rendering
+        "annual_report_filename": "C:/Users/HudaGoian/Documents/Cooperate Development/Company One Pager/Saksiam AR 24.pdf"
     }
     
     # 3. Create the Session with Initial State
@@ -76,10 +86,10 @@ async def test_sequential_agents():
     )
 
     # ============================================================
-    # PHASE 1: Run Initial Search Agent
+    # PHASE 1: Run Initial Search Agent (Gemini)
     # ============================================================
     logger.info("-" * 70)
-    logger.info("📋 PHASE 1: Running InitialSearchAgent")
+    logger.info("📋 PHASE 1: Running InitialSearchAgent (Gemini)")
     logger.info("-" * 70)
     
     runner1 = Runner(
@@ -108,7 +118,6 @@ async def test_sequential_agents():
                 if event.content and event.content.parts:
                     result_text = event.content.parts[0].text
                     logger.info(f"   Output (first 500 chars): {result_text[:500]}")
-                    logger.debug(f"   Full output: {result_text}")
     
     except Exception as e:
         logger.error(f"❌ Error in Phase 1: {e}")
@@ -121,7 +130,6 @@ async def test_sequential_agents():
     vector_store_name = session.state.get("vector_store_name")
     
     logger.info(f"📦 Vector Store Name from Session: {vector_store_name}")
-    logger.debug(f"📋 Session state keys: {list(session.state.keys())}")
     
     if not vector_store_name:
         logger.error("❌ No vector store created. Cannot proceed to Phase 2.")
@@ -129,22 +137,25 @@ async def test_sequential_agents():
         return
 
     # ============================================================
-    # PHASE 2: Run Leadership Agent
+    # PHASE 2: Run Sequential Extraction Agent (Grok)
     # ============================================================
     logger.info("-" * 70)
-    logger.info("📋 PHASE 2: Running LeadershipAgent")
+    logger.info("📋 PHASE 2: Running SequentialExtractionAgent (Grok)")
     logger.info("-" * 70)
-    logger.info("⏳ This will query the vector store and extract leadership info")
+    logger.info("⏳ This will run all 5 extraction agents ONE AT A TIME using Grok")
     logger.info("-" * 70)
     
+    # Create fresh sequential agent using factory
+    sequential_agent = create_sequential_extraction_agent()
+    
     runner2 = Runner(
-        agent=leadership_agent,
+        agent=sequential_agent,
         app_name=APP_NAME,
         session_service=session_service
     )
     
     try:
-        query2 = types.Content(role='user', parts=[types.Part(text="Extract the management team information.")])
+        query2 = types.Content(role='user', parts=[types.Part(text="Extract all information from the annual report.")])
         
         events = runner2.run_async(
             user_id=USER_ID, 
@@ -159,13 +170,10 @@ async def test_sequential_agents():
             logger.debug(f"📨 Event #{event_count} from: {author}, is_final: {event.is_final_response()}")
             
             if event.is_final_response():
-                logger.info("✅ LeadershipAgent Result:")
+                logger.info(f"✅ Final response from {author}")
                 if event.content and event.content.parts:
                     result_text = event.content.parts[0].text
-                    # Log first 2000 chars to console/file
-                    logger.info(f"   Output (first 2000 chars):\n{result_text[:2000]}")
-                    if len(result_text) > 2000:
-                        logger.debug(f"   Full output ({len(result_text)} chars):\n{result_text}")
+                    logger.info(f"   Output (first 1000 chars):\n{result_text[:1000]}")
     
     except Exception as e:
         logger.error(f"❌ Error in Phase 2: {e}")
@@ -183,28 +191,25 @@ async def test_sequential_agents():
     logger.info(f"Company: {final_session.state.get('company_name')}")
     logger.info(f"Vector Store: {final_session.state.get('vector_store_name')}")
     
-    leadership_data = final_session.state.get('leadership_data')
-    if leadership_data:
-        logger.info("Leadership Data: ✅ Found in session state")
-        # Display the data (it's stored by output_key)
-        if isinstance(leadership_data, str):
-            logger.info(f"📋 Leadership Data (first 1500 chars):")
-            logger.info(leadership_data[:1500] + "..." if len(leadership_data) > 1500 else leadership_data)
-            logger.debug(f"📋 Full Leadership Data:\n{leadership_data}")
-        elif isinstance(leadership_data, dict):
-            import json
-            formatted = json.dumps(leadership_data, indent=2)
-            logger.info(f"📋 Leadership Data (structured - first 1500 chars):")
-            logger.info(formatted[:1500])
-            logger.debug(f"📋 Full Leadership Data:\n{formatted}")
-    else:
-        logger.warning("Leadership Data: ⚠️ Not in state")
-        logger.warning(f"   Available keys: {list(final_session.state.keys())}")
+    # Check all extracted data sections
+    #sections = ['leadership_data', 'metrics_data', 'stakeholder_data', 'products_data', 'overview_data']
+    sections = ['stakeholder_data']
+   
+    for section in sections:
+        data = final_session.state.get(section)
+        if data:
+            logger.info(f"✅ {section}: Found in session state")
+            if isinstance(data, str):
+                logger.debug(f"   First 500 chars: {data[:500]}")
+            elif isinstance(data, dict):
+                import json
+                logger.debug(f"   Keys: {list(data.keys())}")
+        else:
+            logger.warning(f"⚠️ {section}: Not in state")
     
     logger.info("=" * 70)
     logger.info("🏁 TEST COMPLETE")
     logger.info("=" * 70)
 
 if __name__ == "__main__":
-    asyncio.run(test_sequential_agents())
-
+    asyncio.run(test_grok_sequential_agent())

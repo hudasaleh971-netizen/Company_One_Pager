@@ -30,7 +30,7 @@ def create_initial_search_agent(name: str = "InitialSearchAgent") -> LlmAgent:
     """
     return LlmAgent(
         name=name,
-        model=Gemini(model_name=GEMINI_MODEL_NAME, retry_options=DEFAULT_RETRY_CONFIG),
+        model=Gemini(model_name="gemini-2.5-flash", retry_options=DEFAULT_RETRY_CONFIG),
         tools=[google_search],
         instruction="""
         You are a financial researcher. Your goal is to provide the annual report source for {company_name}.
