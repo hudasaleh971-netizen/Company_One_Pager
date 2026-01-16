@@ -1,17 +1,25 @@
+import os
 import time
 import textwrap
 import re
 from typing import Dict, Any, Optional
-from google.genai import types, client
+from google import genai
+from google.genai import types
+from google.genai.types import HttpOptions
 from google.adk.tools import ToolContext
 from loguru import logger
-from app.config import GEMINI_API_KEY, TOOL_MODEL_NAME
+from app.config import TOOL_MODEL_NAME
 from app.models.citation import (
     SourceDocument, 
     SourceLibrary, 
     FinalResponse,
     get_page_number
 )
+
+# Configuration for dual-client setup:
+# - Gemini Developer API (API key): Used for File Search Store queries
+# - Vertex AI: Used by agents for LLM inference (configured via env vars)
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 def ask_annual_report(store_name: str, question: str, tool_context: ToolContext) -> Dict[str, Any]:
     """
@@ -36,9 +44,10 @@ def ask_annual_report(store_name: str, question: str, tool_context: ToolContext)
     time.sleep(2)  # To avoid rate limiting issues
 
     try:
-        gemini_client = client.Client(
-            api_key=GEMINI_API_KEY,
-        )
+        # Use Gemini Developer API client (NOT Vertex AI) for file search queries
+        # File Search Store APIs are only available in the Gemini Developer client
+        # IMPORTANT: vertexai=False is required to override GOOGLE_GENAI_USE_VERTEXAI env var
+        gemini_client = genai.Client(api_key=GEMINI_API_KEY, vertexai=False)
         response = gemini_client.models.generate_content(
             model=TOOL_MODEL_NAME,
             contents=question,

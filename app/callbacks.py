@@ -3,13 +3,20 @@ import re
 import time
 import json
 import requests
-from google.genai import types, client
-from app.config import GEMINI_API_KEY
+from google import genai
+from google.genai import types
+
+# Gemini Developer API client for file store operations
+# File Search Store APIs are ONLY available in the Gemini Developer client, NOT Vertex AI
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
 
 def process_and_prepare_file_callback(callback_context):
     """
     Parses the output of the InitialSearchAgent, downloads the file if a URL is found,
     and then uploads the file to a Gemini File Search Store (vector store).
+    
+    NOTE: Uses Gemini Developer API (not Vertex AI) for file store operations.
     """
     print("\n--- [Callback] Processing Search Results & Preparing File ---")
     state = callback_context.state
@@ -100,7 +107,10 @@ def process_and_prepare_file_callback(callback_context):
 
         print(f"🚀 Uploading '{file_path}' ({file_size} bytes) to Gemini...")
         try:
-            gemini_client = client.Client(api_key=GEMINI_API_KEY)
+            # Use Gemini Developer API client (NOT Vertex AI) for file store operations
+            # File Search Store APIs are only available in the Gemini Developer client
+            # IMPORTANT: vertexai=False is required to override GOOGLE_GENAI_USE_VERTEXAI env var
+            gemini_client = genai.Client(api_key=GEMINI_API_KEY, vertexai=False)
             
             print("   Creating File Search Store...")
             file_search_store = gemini_client.file_search_stores.create(

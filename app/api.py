@@ -33,6 +33,7 @@ from app.agents.parallel_extraction_agent import (
     create_overview_agent,
     create_parallel_extraction_agent
 )
+from app.agents.sequential_extraction_agent import create_sequential_extraction_agent
 from app.models.citation import FinalResponse, CitationMetadata, SourceDocument, extract_citations_from_tags
 
 # ============ LOGGING SETUP ============
@@ -553,6 +554,230 @@ async def run_parallel_extraction(company_name: str, file_path: Optional[str] = 
         
     except Exception as e:
         logger.error(f"❌ Parallel extraction error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        
+        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        if not session.state.get("vector_store_name"):
+            return {"error": "Failed to create vector store. Check file upload."}
+        return {"error": str(e)}
+    
+    return result
+
+
+# ============ NEW: SEQUENTIAL EXTRACTION API ============
+
+def create_full_sequential_agent() -> SequentialAgent:
+    """Factory to create a SequentialAgent for full annual report extraction.
+    
+    Uses InitialSearchAgent first, then SequentialExtractionAgent for all sections.
+    This runs sections ONE AT A TIME to avoid rate limiting.
+    """
+    logger.debug("🔧 Creating Full Sequential Agent (rate-limit safe)")
+    return SequentialAgent(
+        name="FullSequentialReportAgent",
+        sub_agents=[
+            create_initial_search_agent("SeqInitialSearchAgent"),
+            create_sequential_extraction_agent(),
+        ],
+    )
+
+
+@app.post("/api/analyze-report-sequential", response_model=AnnualReportResponse)
+async def analyze_annual_report_sequential(
+    company_name: str = Form(...),
+    file: Optional[UploadFile] = File(None)
+):
+    """Analyze a company's annual report using SEQUENTIAL extraction.
+    
+    This endpoint runs extraction agents ONE AT A TIME to avoid rate limiting.
+    Slower than parallel extraction but more reliable under rate limits.
+    
+    Returns structured data for: Overview, Products, Leadership, Stakeholders, Metrics
+    """
+    logger.info("=" * 60)
+    logger.info(f"📊 SEQUENTIAL ANNUAL REPORT ANALYSIS: {company_name}")
+    logger.info("=" * 60)
+    
+    file_path = None
+    
+    # Handle file upload
+    if file:
+        file_ext = os.path.splitext(file.filename)[1] or ".pdf"
+        unique_filename = f"{company_name.replace(' ', '_')}_{uuid.uuid4().hex[:8]}{file_ext}"
+        file_path = str(UPLOAD_DIR / unique_filename)
+        
+        try:
+            with open(file_path, "wb") as buffer:
+                content = await file.read()
+                buffer.write(content)
+            logger.info(f"📁 Saved: {file_path} ({os.path.getsize(file_path)} bytes)")
+        except Exception as e:
+            logger.error(f"❌ File save failed: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    
+    # Run sequential extraction
+    try:
+        result = await run_sequential_extraction(company_name, file_path)
+        
+        if result.get("error"):
+            return AnnualReportResponse(
+                company_name=company_name,
+                error=result["error"]
+            )
+        
+        return AnnualReportResponse(
+            company_name=company_name,
+            overview=result.get("overview"),
+            products=result.get("products"),
+            leadership=result.get("leadership"),
+            stakeholders=result.get("stakeholders"),
+            metrics=result.get("metrics")
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Sequential annual report analysis failed: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+async def run_sequential_extraction(company_name: str, file_path: Optional[str] = None) -> dict:
+    """Run sequential extraction for all sections of the annual report.
+    
+    Processes sections ONE AT A TIME to avoid rate limiting.
+    """
+    logger.info(f"🚀 Running Sequential Extraction for: {company_name}")
+    
+    APP_NAME = "sequential_report_api"
+    USER_ID = "api_user"
+    SESSION_ID = f"seq_session_{uuid.uuid4().hex[:8]}"
+    
+    session_service = InMemorySessionService()
+    
+    initial_state = {
+        "company_name": company_name,
+        "annual_report_filename": file_path if file_path else ""
+    }
+    
+    logger.info(f"📝 Session: {SESSION_ID}")
+    logger.debug(f"📝 Initial state: {initial_state}")
+    
+    await session_service.create_session(
+        app_name=APP_NAME,
+        user_id=USER_ID,
+        session_id=SESSION_ID,
+        state=initial_state
+    )
+    
+    # Create fresh agent using factory
+    sequential_agent = create_full_sequential_agent()
+    
+    runner = Runner(
+        agent=sequential_agent,
+        app_name=APP_NAME,
+        session_service=session_service
+    )
+    
+    result = {}
+    
+    try:
+        query = types.Content(
+            role='user', 
+            parts=[types.Part(text="Analyze the annual report and extract all sections: overview, products, leadership, stakeholders, and metrics.")]
+        )
+        
+        logger.info("📤 Starting sequential extraction (one section at a time)...")
+        events = runner.run_async(user_id=USER_ID, session_id=SESSION_ID, new_message=query)
+        
+        event_count = 0
+        async for event in events:
+            event_count += 1
+            author = getattr(event, 'author', 'unknown')
+            
+            if event.is_final_response():
+                logger.debug(f"📨 Final response #{event_count} from: {author}")
+        
+        logger.info(f"📊 Total events processed: {event_count}")
+        
+        # Retrieve section data from session state
+        session = await session_service.get_session(app_name=APP_NAME, user_id=USER_ID, session_id=SESSION_ID)
+        
+        logger.info("📥 Extracting section data from session state...")
+        logger.info(f"📋 Session state keys: {list(session.state.keys())}")
+        
+        # DEBUG: Log full session state for troubleshooting
+        for key, value in session.state.items():
+            if isinstance(value, dict):
+                logger.debug(f"   🔑 {key}: dict with {len(value)} keys - {list(value.keys())[:5]}")
+            elif isinstance(value, str):
+                logger.debug(f"   🔑 {key}: str({len(value)} chars) - {value[:100]}...")
+            else:
+                logger.debug(f"   🔑 {key}: {type(value).__name__} = {str(value)[:100]}")
+        
+        # Map output_keys to section names (same as parallel)
+        section_mapping = {
+            "overview_data": "overview",
+            "products_data": "products", 
+            "leadership_data": "leadership",
+            "stakeholder_data": "stakeholders",
+            "metrics_data": "metrics"
+        }
+        
+        for state_key, section_name in section_mapping.items():
+            raw_data = session.state.get(state_key)
+            if raw_data:
+                logger.info(f"📄 Found {state_key} in session state (type: {type(raw_data).__name__})")
+                
+                # DEBUG: Log raw data structure
+                if isinstance(raw_data, dict):
+                    logger.debug(f"   Dict keys: {list(raw_data.keys())}")
+                    if "cited_text" in raw_data:
+                        logger.debug(f"   cited_text length: {len(raw_data.get('cited_text', ''))}")
+                    if "sources" in raw_data:
+                        logger.debug(f"   sources count: {len(raw_data.get('sources', {}))}")
+                elif isinstance(raw_data, str):
+                    logger.debug(f"   String length: {len(raw_data)}, first 200 chars: {raw_data[:200]}")
+                    # Try to parse as JSON if it's a string
+                    try:
+                        import json
+                        parsed = json.loads(raw_data)
+                        logger.info(f"   ✅ Successfully parsed string as JSON")
+                        raw_data = parsed
+                    except:
+                        logger.warning(f"   ⚠️ Could not parse string as JSON, wrapping in cited_text")
+                        raw_data = {"cited_text": raw_data, "sources": {}}
+                
+                section_data = process_section_data(raw_data, section_name)
+                if section_data:
+                    result[section_name] = section_data
+                    logger.info(f"   ✅ Processed {section_name} successfully")
+                else:
+                    logger.warning(f"   ⚠️ process_section_data returned None for {section_name}")
+            else:
+                logger.warning(f"⚠️ Missing {state_key} in session state")
+        
+        # Also check for final_response (fallback for each agent)
+        if len(result) == 0:
+            logger.info("🔄 No sections found, checking fallback keys...")
+            final_response = session.state.get("final_response")
+            if final_response:
+                logger.info(f"📄 Found 'final_response' in session state (type: {type(final_response).__name__})")
+                if isinstance(final_response, dict):
+                    logger.debug(f"   Dict keys: {list(final_response.keys())}")
+                    # Try to use final_response as a fallback for all sections
+                    for section_name in section_mapping.values():
+                        if section_name not in result:
+                            section_data = process_section_data(final_response, section_name)
+                            if section_data:
+                                result[section_name] = section_data
+                                logger.info(f"   ✅ Used final_response for {section_name}")
+                                break  # Only use once since it's the same data
+        
+        logger.info(f"✅ Sequential extraction complete: {len(result)} sections extracted")
+        
+    except Exception as e:
+        logger.error(f"❌ Sequential extraction error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         

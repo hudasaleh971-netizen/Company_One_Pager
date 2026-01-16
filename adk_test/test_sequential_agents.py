@@ -4,9 +4,24 @@ import asyncio
 from pathlib import Path
 from google.genai import types
 from loguru import logger
-
+from google.adk.runners import Runner
+from google.adk.sessions import InMemorySessionService
+from app.agents.initial_search_agent import initial_search_agent
+from app.agents.parallel_extraction_agent import leadership_agent
 # Add project root to sys.path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../')))
+
+# Verify Google Application Credentials are set
+if not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    logger.error("❌ GOOGLE_APPLICATION_CREDENTIALS environment variable is not set!")
+    logger.error("   Please set it to your service account JSON key file path.")
+    logger.error("   Example: $env:GOOGLE_APPLICATION_CREDENTIALS = 'C:/path/to/key.json'")
+    sys.exit(1)
+else:
+    creds_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    logger.info(f"✅ Using credentials from: {creds_path}")
+    if not os.path.exists(creds_path):
+        logger.warning(f"⚠️ Credentials file not found at: {creds_path}")
 
 # ============ LOGGING SETUP ============
 logger.remove()
@@ -31,10 +46,7 @@ logger.add(
 
 logger.info(f"📁 Test logs will be saved to: {LOG_DIR}")
 
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from app.agents.initial_search_agent import initial_search_agent
-from app.agents.parallel_extraction_agent import leadership_agent
+
 
 # CONFIGURATION
 APP_NAME = "test_app"

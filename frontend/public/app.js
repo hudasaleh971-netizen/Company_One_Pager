@@ -89,8 +89,9 @@ async function runAnalysis() {
             console.log(`📁 Uploading file: ${fileInput.files[0].name}`);
         }
 
-        // Use the new endpoint for parallel extraction
-        const response = await fetch(`${API_BASE_URL}/api/analyze-report`, {
+        // Use the sequential endpoint (rate-limit safe, runs one section at a time)
+        // Alternative: /api/analyze-report for parallel extraction (faster but may hit rate limits)
+        const response = await fetch(`${API_BASE_URL}/api/analyze-report-sequential`, {
             method: 'POST',
             body: formData
         });
