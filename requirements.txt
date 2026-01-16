@@ -10,3 +10,4 @@ loguru
 pydantic
 fastapi
 python-multipart
+python-pptx>=0.6.21

@@ -3,7 +3,8 @@ from app.config import GEMINI_API_KEY
 
 def force_cleanup():
     print("🧹 Starting Cleanup...")
-    gemini_client = client.Client(api_key=GEMINI_API_KEY)
+    # IMPORTANT: vertexai=False required to use Gemini Developer API for file/store operations
+    gemini_client = client.Client(api_key=GEMINI_API_KEY, vertexai=False)
 
     # --- STEP 1: DELETE STANDALONE FILES ---
     print("\n--- Step 1: Deleting Standalone Files ---")
